@@ -1,0 +1,223 @@
+@page "/jsonapiaccessor"
+
+@attribute [Authorize]
+
+@inject IHttpClientFactory ClientFactory
+
+<PageTitle>Json Api Accessor</PageTitle>
+
+
+<h1>Json Api Accessor</h1>
+
+<p>Fetch and display the topology view by a remote node.</p>
+
+@*
+  Form tutorial:
+    https://learn.microsoft.com/en-us/aspnet/core/blazor/forms-and-input-components?view=aspnetcore-7.0
+*@
+@*
+  InputNumber variation enforcing range limits
+    https://stackoverflow.com/questions/73546661/blazor-html-number-inputs-dont-enforce-min-max-constraints
+*@
+<EditForm Model="@Model" OnSubmit="@Submit" class="form-inline">
+    <div class="form-group mb-2">
+        <label for="host">Hostname</label>
+        <InputText id="host" class="form-control" @bind-Value="Model!.Host" />
+    </div>
+    <div class="form-group mb-2">
+        <label for="port">Port</label>
+        <InputNumber id="port" class="form-control" @bind-Value="Model!.Port" />
+    </div>
+    <div class="form-group mb-2">
+        <label for="path">Path</label>
+        <InputText id="path" class="form-control" @bind-Value="Model!.Path" />
+    </div>
+    <button type="submit" class="btn btn-outline-info">Query</button>
+</EditForm>
+
+@if (Model?.IsValid() ?? false) {
+    <p>Uri: <span>@Model.ToUri()</span></p>
+} else {
+    <p>Insert a valid Uri</p>
+}
+
+
+<p>DataSource: <span>@datasource</span></p>
+@if (error)
+{
+    <p><em>Error...</em></p>
+    <p>Reason: @errorReason</p>
+}
+else if (content == null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <div>
+        @if (receivedJson is not null)
+        {
+            DiplayJson(receivedJson);
+        }
+        else
+        {
+            <p>Received empty response</p>
+        }
+    </div>
+}
+
+@code {
+    public UriGenerator? Model { get; set; }
+
+    private string? datasource;
+    private string? remoteEndpoint;
+    private JsonNode? receivedJson;
+    private bool error = false;
+    private string? errorReason;
+    private string content = "";
+    private bool shouldRender;
+    protected override bool ShouldRender() => shouldRender;
+
+    private HttpResponseMessage? response;
+
+    private async Task AccessApiTopology()
+    {
+        shouldRender = false;
+
+        var request = new HttpRequestMessage(HttpMethod.Get, datasource);
+
+        // Inspired by "Call Web Api":
+        //  https://learn.microsoft.com/en-us/aspnet/core/blazor/call-web-api?view=aspnetcore-7.0&pivots=server
+        var client = ClientFactory.CreateClient();
+        try
+        {
+            response = await client.SendAsync(request);
+
+            if (response.IsSuccessStatusCode)
+            {
+                if (response.Content.Headers.GetValues("Content-Type").Contains("application/json"))
+                {
+                    content = await response.Content.ReadAsStringAsync();
+                    // Generic JSON manipulation
+                    //   https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/use-dom
+                    receivedJson = JsonNode.Parse(content)!;
+                    error = false;
+                }
+                else
+                {
+                    // explicity release resources
+                    errorReason = "Response must be application/json";
+                    error = true;
+                }
+            }
+            else
+            {
+                errorReason = response.ReasonPhrase;
+                error = true;
+            }
+            response.Dispose();
+        }
+        catch (System.Exception e)
+        {
+            errorReason = e.ToString();
+            error = true;
+        }
+
+        shouldRender = true;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Model ??= new();
+        // https://learn.microsoft.com/en-us/dotnet/api/system.uri?view=net-6.0
+        datasource = "http://localhost:8008/api/topology";
+        await AccessApiTopology();
+    }
+
+    private async Task Submit()
+    {
+        if (Model?.IsValid() ?? false)
+        {
+            datasource = Model.ToUri().ToString();
+            await AccessApiTopology();
+        }
+    }
+
+    public class UriGenerator
+    {
+        public string? Host { get; set; } = "localhost";
+        public int? Port { get; set; } = 8008;
+        public string? Path { get; set; } = "/api/topology";
+
+        public Uri ToUri()
+        {
+            var b = new UriBuilder();
+            b.Scheme = "http";
+            b.Host = Host;
+            if (Port is not null)
+            {
+                b.Port = (int)Port;
+            }
+            b.Path = Path;
+            return b.Uri;
+        }
+
+        public bool IsValid()
+        {
+            try
+            {
+                ToUri();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
+}
+
+@{
+    // Doc:
+    //   https://learn.microsoft.com/en-us/dotnet/api/system.text.json.nodes.jsonnode?view=net-6.0
+    // Derived:
+    //  System.Text.Json.Nodes.JsonArray
+    //  System.Text.Json.Nodes.JsonObject
+    //  System.Text.Json.Nodes.JsonValue
+    void DiplayJson(JsonNode json)
+    {
+        if (json is JsonArray jArray)
+        {
+            foreach (var jItem in jArray)
+            {
+                <div>
+                    @{
+                        DiplayJson(jItem);
+                    }
+                </div>
+            }
+        }
+                else if (json is JsonObject jObj)
+        {
+            <table class="table">
+                <tbody>
+                    @foreach (var prop in jObj.AsEnumerable())
+                    {
+                        <tr>
+                            <th>@prop.Key</th>
+                            <td>
+                                @{
+                                    DiplayJson(prop.Value);
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+        else if (json is JsonValue jVal)
+        {
+            <div>@jVal</div>
+        }
+    }
+}

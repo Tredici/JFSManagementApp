@@ -27,6 +27,32 @@
         <a class="dismiss">🗙</a>
     </div>
 
+    <script>
+    @*
+      For file download:
+        https://learn.microsoft.com/en-us/aspnet/core/blazor/file-downloads?view=aspnetcore-6.0#cross-origin-resource-sharing-cors
+    *@
+    window.downloadFileFromStream = async (fileName, contentStreamReference) => {
+        const arrayBuffer = await contentStreamReference.arrayBuffer();
+        const blob = new Blob([arrayBuffer]);
+        const url = URL.createObjectURL(blob);
+        const anchorElement = document.createElement('a');
+        anchorElement.href = url;
+        anchorElement.download = fileName ?? '';
+        anchorElement.click();
+        anchorElement.remove();
+        URL.revokeObjectURL(url);
+    }
+    window.triggerFileDownload = (fileName, url) => {
+        const anchorElement = document.createElement('a');
+        anchorElement.href = url;
+        anchorElement.target = '_blank';
+        anchorElement.setAttribute("download", fileName ?? '');
+        anchorElement.click();
+        anchorElement.remove();
+    }
+    </script>
+
     <script src="_framework/blazor.server.js"></script>
 </body>
 </html>

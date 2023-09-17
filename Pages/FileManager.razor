@@ -1,0 +1,448 @@
+@page "/filemanager"
+
+@attribute [Authorize]
+
+@using System.IO
+@using System.Text.Json
+@using System.Text.Json.Nodes;
+@using System.Text.Json.Serialization
+@using System.ComponentModel.DataAnnotations
+    
+@*
+    JS interop https://learn.microsoft.com/en-us/aspnet/core/blazor/javascript-interoperability/?view=aspnetcore-6.0#location-of-javascipt-1
+*@
+@inject IJSRuntime JS
+@inject IHttpClientFactory ClientFactory
+@inject ILogger<FileManager> Logger
+
+
+<PageTitle>File Management</PageTitle>
+
+<h1>File Management</h1>
+
+<p>Allow upload, download and deletion of remote files</p>
+
+
+@*
+  Form tutorial:
+    https://learn.microsoft.com/en-us/aspnet/core/blazor/forms-and-input-components?view=aspnetcore-7.0
+*@
+@*
+  InputNumber variation enforcing range limits
+    https://stackoverflow.com/questions/73546661/blazor-html-number-inputs-dont-enforce-min-max-constraints
+*@
+<EditForm Model="@Model" OnSubmit="@Submit" class="form-inline">
+    <DataAnnotationsValidator />
+    <ValidationSummary />
+
+    <div class="form-group mb-2">
+        <label for="host">Hostname</label>
+        <InputText id="host" class="form-control" @bind-Value="Model!.Host" />
+    </div>
+    <div class="form-group mb-2">
+        <label for="port">Port</label>
+        <InputNumber id="port" class="form-control" @bind-Value="Model!.Port" />
+    </div>
+    <div class="form-group mb-2">
+        <label>
+            Operation:
+            <InputSelect @bind-Value="Model!.Method">
+                <option value="GET">   Download (GET)</option>
+                <option value="PUT">   Upload   (PUT)</option>
+                <option value="DELETE">Delete   (DELETE)</option>
+            </InputSelect>
+        </label>
+    </div>
+    <div class="form-group mb-2">
+        <label for="path">File</label>
+        <InputText id="path" class="form-control" @bind-Value="Model!.File" />
+    </div>
+    @if (Model.Method == "DELETE")
+    {
+        <div class="form-group mb-2">
+            <label>
+                I understand that this operation can NOT be undone:
+                <InputCheckbox @bind-Value="Model!.UnderstandConsequences" />
+            </label>
+        </div>
+    }
+    else
+    {
+        // alwais reset flag to prevent involuntary updates
+        Model.UnderstandConsequences = false;
+        if (Model.Method == "GET")
+        {
+            Logger.Log(LogLevel.Debug, "Method: GET");
+        }
+        else if (Model.Method == "PUT")
+        {
+            Logger.Log(LogLevel.Debug, "Method: PUT");
+            <div>
+                <InputFile OnChange="@LoadFiles" multiple />
+                @if (isLoading)
+                {
+                    <p>Uploading...</p>
+                }
+                else
+                {
+                    <ul>
+                        @foreach (var file in loadedFiles)
+                        {
+                            <li>
+                                <ul>
+                                    <li>Name: @file.Name</li>
+                                    <li>Last modified: @file.LastModified.ToString()</li>
+                                    <li>Size (bytes): @file.Size</li>
+                                    <li>Content type: @file.ContentType</li>
+                                </ul>
+                            </li>
+                        }
+                    </ul>
+                }
+            </div>
+
+        }
+    }
+    <button type="submit" class=@(Model.Method == "GET" ? "btn btn-primary" : "btn btn-danger")>Submit</button>
+</EditForm>
+
+@if (uploadedFiles.Any())
+{
+    <div>
+        <p></p>
+        <ol>
+            @foreach (var file in uploadedFiles)
+            {
+                <li><span>@file.Item1:</span> <span>@file.Item2</span></li>
+            }
+        </ol>
+    </div>
+}
+
+<div class="m-2">
+    @if (Model?.IsValid() ?? false) {
+        <p>Uri: <span>@Model.ToUri()</span></p>
+    } else {
+        <p>Insert a valid Uri</p>
+    }
+</div>
+
+
+<div class="m-2">
+    <p>Data source: <span>@datasource</span></p>
+    @if (error)
+    {
+        <p><em>Error!</em></p>
+        <p>Reason: @errorReason</p>
+    }
+    else if (content == null)
+    {
+        <p><em>Loading...</em></p>
+    }
+    else
+    {
+        <div>
+            <p>Result: @result</p>
+            <p>Response content: @content</p>
+        </div>
+    }
+</div>
+
+
+
+@code {
+    public RequestedOperation Model { get; set; } = new();
+
+    private string? datasource;
+    private bool error = false;
+    private string? errorReason;
+    private string? result;
+    private string? content;
+    private bool shouldRender;
+    protected override bool ShouldRender() => shouldRender;
+
+    // file uploading
+    private List<IBrowserFile> loadedFiles = new();
+    // use with caution!
+    private int maxAllowedFiles = 128;
+    private long maxFileSize = int.MaxValue;
+    private List<Tuple<string,Uri>> uploadedFiles = new();
+    private bool isLoading;
+
+    private HttpResponseMessage? response;
+
+    private HttpRequestMessage BuildRequest()
+    {
+        var uriB = new UriBuilder()
+        {
+            Host = Model.Host,
+            Port = Model.Port ?? 80,
+            Path = "/file/"
+        };
+        var uri = new Uri(uriB.Uri, Model!.File?.TrimStart('/') ?? "");
+        var req = new HttpRequestMessage(
+            Model!.Method == "DELETE" ? HttpMethod.Delete :
+            Model!.Method == "PUT" ? HttpMethod.Put : HttpMethod.Get,
+            uri
+        );
+        return req;
+    }
+
+    private bool IsTargetValid()
+    {
+        try
+        {
+            BuildRequest();
+            return true;
+        }
+        catch (System.Exception)
+        {
+            return false;
+        }
+    }
+
+    private Dictionary<string, MemoryStream> fileMap = new();
+    private async Task LoadFiles(InputFileChangeEventArgs e)
+    {
+        isLoading = true;
+        // free memory buffers
+        foreach (var ms in fileMap.Values)
+        {
+            ms.Close();
+        }
+        fileMap.Clear();
+        loadedFiles.Clear();
+
+        foreach (var file in e.GetMultipleFiles(maxAllowedFiles))
+        {
+            try
+            {
+                MemoryStream ms = new MemoryStream();
+                await file.OpenReadStream(maxFileSize).CopyToAsync(ms);
+                ms.SetLength(ms.Position);
+                ms.Seek(0, SeekOrigin.Begin);
+                loadedFiles.Add(file);
+                fileMap[file.Name] = ms;
+            }
+            catch (Exception ex)
+            {
+                // free memory buffers
+                foreach (var ms in fileMap.Values)
+                {
+                    ms.Close();
+                }
+                fileMap.Clear();
+                loadedFiles.Clear();
+                Logger.LogError("File: {Filename} Error: {Error}", 
+                    file.Name, ex.Message);
+                error = true;
+                errorReason = $"Error with File: {file.Name} Error: {ex.Message}";
+                break;
+            }
+        }
+
+        isLoading = false;
+    }
+
+    private async Task SubmitOperation()
+    {
+        shouldRender = false;
+
+        var req = BuildRequest();
+        datasource = req.RequestUri?.ToString();
+        var request = req;
+
+        if (req.Method == HttpMethod.Get)
+        {
+            // simply trigger file donwload
+            //  https://learn.microsoft.com/en-us/aspnet/core/blazor/file-downloads?view=aspnetcore-6.0#cross-origin-resource-sharing-cors
+            // Callback in _Layout,cshtml
+            var fileURL = req!.RequestUri!.ToString();
+            var filePath = req!.RequestUri!.AbsolutePath;
+            if (string.IsNullOrWhiteSpace(filePath) || filePath.EndsWith('/'))
+            {
+                errorReason = "Path must identify a file, it cannot refers to directories!";
+                error = true;
+            }
+            else if (JS is null)
+            {
+                error = true;
+                errorReason = "JS runtime is null!";
+            }
+            else
+            {
+                error = false;
+                var fileName = filePath.Substring(filePath.LastIndexOf("/")+1);
+
+                var client = ClientFactory.CreateClient();
+                response = await client.SendAsync(request);
+                if (!response.IsSuccessStatusCode)
+                {
+                    errorReason = response.StatusCode.ToString() + " "
+                        + response.ReasonPhrase;
+                    error = true;
+                    response.Dispose();
+                }
+                else
+                {
+                    var fileStream = await response.Content.ReadAsStreamAsync();
+                    using var streamRef = new DotNetStreamReference(stream: fileStream);
+                    await JS.InvokeVoidAsync("downloadFileFromStream", fileName, streamRef);
+                }
+            }
+        }
+        else if (req.Method == HttpMethod.Put)
+        {
+            if (!string.IsNullOrEmpty(req!.RequestUri!.LocalPath) && !req!.RequestUri!.LocalPath.EndsWith('/'))
+            {
+                error = true;
+                errorReason = "When uploading files path must refers to directory, "
+                    + "last path component is obtained from file names";
+            }
+            else
+            {
+                // File Upload:
+                //  https://learn.microsoft.com/en-us/aspnet/core/blazor/file-uploads?view=aspnetcore-6.0
+                try
+                {                    
+                    var client = ClientFactory.CreateClient();
+                    try
+                    {
+                        uploadedFiles.Clear();
+                        shouldRender = true;
+                        error = false;
+                        foreach (var file in fileMap)
+                        {
+                            var data = file.Value;
+                            var fileUri = new Uri(req.RequestUri, file.Key);
+                            //var fileReq = new HttpRequestMessage(HttpMethod.Put, );
+                            var buf = data.GetBuffer();
+                            var rom = new ReadOnlyMemory<byte>(buf, 0, (int)data.Length);
+                            using var mContent = new ReadOnlyMemoryContent(rom);
+                            var fileReq = new HttpRequestMessage(HttpMethod.Put, fileUri);
+                            fileReq.Headers.ExpectContinue = true;
+                            fileReq.Content = mContent;
+                            using var res = await client.SendAsync(fileReq, HttpCompletionOption.ResponseHeadersRead);
+                            if (res.IsSuccessStatusCode)
+                            {
+                                Logger.LogTrace(
+                                    $"Uploaded {file.Key} to uri {fileUri}"
+                                );
+                                var pair = Tuple.Create(file.Key, fileUri); 
+                                uploadedFiles.Add(pair);
+                            }
+                            else
+                            {
+                                error = true;
+                                errorReason = $"Failed to upload file to path '{fileUri}'': " + res.ReasonPhrase;
+                            }
+                        }
+                    }
+                    catch (System.Exception e)
+                    {
+                        error = true;
+                        errorReason = e.ToString();
+                    }
+                    finally
+                    {
+                        shouldRender = false;
+                    }
+                    foreach (var ms in fileMap.Values)
+                    {
+                        ms.Close();
+                    }
+                    fileMap.Clear();
+                    loadedFiles.Clear();
+                }
+                catch (System.Exception)
+                {
+                    
+                }
+            }
+        }
+        else if (req.Method == HttpMethod.Delete)
+        {
+            if (!Model.UnderstandConsequences)
+            {
+                error = true;
+                errorReason = "Cannot require DELETE if consequences are not clear!";
+            }
+            else
+            {
+                // Inspired by "Call Web Api":
+                //  https://learn.microsoft.com/en-us/aspnet/core/blazor/call-web-api?view=aspnetcore-7.0&pivots=server
+                var client = ClientFactory.CreateClient();
+                try
+                {
+                    response = await client.SendAsync(request);
+                    result = response.ReasonPhrase;
+                    content = await response.Content.ReadAsStringAsync();
+                    error = false;
+                    // explicity release resources
+                    response.Dispose();
+                }
+                catch (System.Exception e)
+                {
+                    errorReason = e.ToString();
+                    error = true;
+                }
+            }
+        }
+        shouldRender = true;
+    }
+
+    protected override void OnInitialized()
+    {
+        Model ??= new();
+        shouldRender = true;
+    }
+
+    private async Task Submit()
+    {
+        if (IsTargetValid())
+        {
+            await SubmitOperation();
+        }
+    }
+
+    public class RequestedOperation
+    {
+        [Required]
+        public string? Method { get; set; } = "GET";
+        [Required]
+        public string? Host { get; set; } = "localhost";
+        [Required]
+        public int? Port { get; set; } = 8008;
+        [Required]
+        public string? File { get; set; }
+
+        public bool UnderstandConsequences { get; set; }
+
+        public Uri ToUri()
+        {
+            var b = new UriBuilder();
+            b.Scheme = "http";
+            b.Host = Host;
+            if (Port is not null)
+            {
+                b.Port = (int)Port;
+            }
+            b.Path = File;
+            return b.Uri;
+        }
+
+        public bool IsValid()
+        {
+            try
+            {
+                ToUri();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
+}
+

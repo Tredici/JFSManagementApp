@@ -10,6 +10,7 @@ using JFSManagementApp.Data;
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
+builder.Services.AddHttpClient();
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseSqlite(connectionString));
@@ -19,7 +20,6 @@ builder.Services.AddDefaultIdentity<IdentityUser>(options => options.SignIn.Requ
 builder.Services.AddRazorPages();
 builder.Services.AddServerSideBlazor();
 builder.Services.AddScoped<AuthenticationStateProvider, RevalidatingIdentityAuthenticationStateProvider<IdentityUser>>();
-builder.Services.AddSingleton<WeatherForecastService>();
 
 var app = builder.Build();
 
@@ -35,7 +35,8 @@ else
     app.UseHsts();
 }
 
-app.UseHttpsRedirection();
+// Disable https due to absence of valid CA
+//app.UseHttpsRedirection();
 
 app.UseStaticFiles();
 

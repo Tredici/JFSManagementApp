@@ -1,0 +1,260 @@
+﻿@page "/watchnode"
+
+@attribute [Authorize]
+
+@inject IHttpClientFactory ClientFactory
+
+<PageTitle>Topology View</PageTitle>
+
+<h1>Topology View</h1>
+
+<p>Fetch and display the topology seen by a remote node.</p>
+
+@*
+  Form tutorial:
+    https://learn.microsoft.com/en-us/aspnet/core/blazor/forms-and-input-components?view=aspnetcore-7.0
+*@
+@*
+  InputNumber variation enforcing range limits
+    https://stackoverflow.com/questions/73546661/blazor-html-number-inputs-dont-enforce-min-max-constraints
+*@
+<EditForm Model="@Model" OnSubmit="@Submit">
+    <InputText @bind-Value="Model!.Host" />
+    <InputNumber @bind-Value="Model!.Port" />
+    <button type="submit">Submit</button>
+</EditForm>
+
+@if (Model?.IsValid() ?? false) {
+    <p>Uri: <span>@Model.ToUri()</span></p>
+} else {
+    <p>Insert a valid Uri</p>
+}
+
+
+<p>DataSource: <span>@datasource</span></p>
+@if (error)
+{
+    <p><em>Error...</em></p>
+    <p>Reason: @errorReason</p>
+}
+else if (content == null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <div>
+        @if (topologyView is not null)
+        {
+            DiplayTopologyView(topologyView);
+        }
+        else
+        {
+            <p>topologyView is null</p>
+        }
+    </div>
+}
+
+@code {
+    public UriGenerator? Model { get; set; }
+
+    private string? datasource;
+    private TopologyView? topologyView = null;
+    private bool error = false;
+    private string? errorReason;
+    private string content = "";
+    private bool shouldRender;
+    protected override bool ShouldRender() => shouldRender;
+
+    private HttpResponseMessage? response;
+
+    private async Task AccessApiTopology()
+    {
+        shouldRender = false;
+
+        var request = new HttpRequestMessage(HttpMethod.Get, datasource);
+
+        // Inspired by "Call Web Api":
+        //  https://learn.microsoft.com/en-us/aspnet/core/blazor/call-web-api?view=aspnetcore-7.0&pivots=server
+        var client = ClientFactory.CreateClient();
+        try
+        {
+            response = await client.SendAsync(request);
+
+            if (response.IsSuccessStatusCode)
+            {
+                if (response.Content.Headers.GetValues("Content-Type").Contains("application/json"))
+                {
+                    content = await response.Content.ReadAsStringAsync();
+                    topologyView = JsonSerializer.Deserialize<TopologyView>(content);
+                    error = false;
+                }
+                else
+                {
+                    errorReason = "Expected 'Content-Type: application/json' "
+                        + $"but received => {response.Content.Headers.ContentType?.ToString() ?? "nothing"}";
+                    error = true;
+                }
+            }
+            else
+            {
+                errorReason = response.StatusCode.ToString() + " "
+                    + response.ReasonPhrase;
+                error = true;
+            }            
+        }
+        catch (System.Exception)
+        {
+            errorReason = $"Failed to send request: {request.RequestUri}";
+            error = true;
+        }
+
+        shouldRender = true;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Model ??= new() 
+        {
+            Host = "localhost",
+            Port = 8008,
+            Path = "/api/topology",
+        };
+        // https://learn.microsoft.com/en-us/dotnet/api/system.uri?view=net-6.0
+        await Submit();
+    }
+
+    private async Task Submit()
+    {
+        if (Model?.IsValid() ?? false)
+        {
+            datasource = Model.ToUri().ToString();
+            await AccessApiTopology();
+        }
+    }
+
+    public class TopologyView
+    {
+        [JsonPropertyName("Identity")]
+        public DatanodeDescriptor? Identity { get; set; }
+        public IEnumerable<DatanodeDescriptor>? Topology { get; set; }
+    }
+
+    public class DatanodeDescriptor
+    {
+        [JsonPropertyName("Id")]
+        public long? Id { get; set; }
+        public long StartInstant { get; set; }
+        public int? ReplicationFactor { get; set; }
+        public string? Status { get; set; }
+
+        public IEnumerable<string>? DataEndpoints { get; set; }
+        public IEnumerable<string>? ManagementEndpoint { get; set; }
+
+        public long LastStatusChange { get; set; }
+        public long LastTopologyUpdate { get; set; }
+        public long LastFileUpdate { get; set; }
+    }
+
+
+
+    public class UriGenerator
+    {
+        public string? Host { get; set; }
+        public int? Port { get; set; }
+        public string? Path { get; set; } = "/api/topology";
+
+        public Uri ToUri()
+        {
+            var b = new UriBuilder();
+            b.Scheme = "http";
+            b.Host = Host;
+            if (Port is not null)
+            {
+                b.Port = (int)Port;
+            }
+            b.Path = Path;
+            return b.Uri;
+        }
+
+        public bool IsValid()
+        {
+            try
+            {
+                ToUri();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
+}
+
+@{
+    void PrintDescriptor(DatanodeDescriptor d)
+    {
+        if (d is not null)
+        {
+            <tbody>
+                <tr>
+                    <th>Id:</th><td>@d.Id</td>
+                </tr>
+                <tr>
+                    <th>Status:</th><td>@d.Status</td>
+                </tr>
+                <tr>
+                    <th>ReplicationFactor:</th><td>@d.ReplicationFactor</td>
+                </tr>
+                <tr>
+                    @*
+                      DateTimeOffset.FromUnixTimeMilliseconds:
+                        https://learn.microsoft.com/en-us/dotnet/api/system.datetimeoffset.fromunixtimemilliseconds?view=net-6.0
+                    *@
+                    <th>StartInstant</th>
+                    <td>@DateTimeOffset.FromUnixTimeMilliseconds(d.StartInstant)</td>
+                </tr>
+                <tr>
+                    <th>LastStatusChange</th>
+                    <td>@DateTimeOffset.FromUnixTimeMilliseconds(d.LastStatusChange)</td>
+                </tr>
+                <tr>
+                    <th>LastTopologyUpdate</th>
+                    <td>@DateTimeOffset.FromUnixTimeMilliseconds(d.LastTopologyUpdate)</td>
+                </tr>
+                <tr>
+                    <th>LastFileUpdate</th>
+                    <td>@DateTimeOffset.FromUnixTimeMilliseconds(d.LastFileUpdate)</td>
+                </tr>
+            </tbody>
+        }
+    }
+
+    void DiplayTopologyView(TopologyView topologyView)
+    {
+        if (topologyView is not null) {
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th rowspan="2">Node Identity</th>
+                    </tr>
+                </thead>
+                @{
+                    PrintDescriptor(topologyView.Identity);
+                }
+            </table>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th rowspan="2">Topology known by the node:</th>
+                    </tr>
+                </thead>
+                @foreach (var item in topologyView.Topology ?? Enumerable.Empty<DatanodeDescriptor>())
+                {
+                    PrintDescriptor(item);
+                }
+            </table>
+        }
+    }
+}
