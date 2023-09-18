@@ -10,7 +10,7 @@ using JFSManagementApp.Data;
 var builder = WebApplication.CreateBuilder(args);
 // https://github.com/dotnet/aspnetcore/issues/28174#issuecomment-734239932
 // https://learn.microsoft.com/th-th/aspnet/core/razor-pages/ui-class?view=aspnetcore-3.1&tabs=visual-studio#consume-content-from-a-referenced-rcl
-builder.WebHost.UseStaticWebAssets();
+// builder.WebHost.UseStaticWebAssets();
 
 // Add services to the container.
 builder.Services.AddHttpClient();
